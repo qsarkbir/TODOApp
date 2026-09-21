@@ -28,6 +28,23 @@ git clone https://github.com/qsarkbir/TODOApp.git
 | ファイル | 内容 |
 | --- | --- |
 | `index.html` | HTML・CSS・JavaScript をまとめた単一ファイルのアプリ本体 |
+| `CLAUDE.md` | Claude Code 向けのリポジトリガイド(構成や実装上の注意点) |
+| `.claude/settings.json` | Claude Code のプロジェクト共有設定 |
+
+## Claude Code での開発
+
+このリポジトリは [Claude Code](https://claude.com/claude-code) で開発できます。
+
+1. リポジトリのルートで `claude` を起動します。
+2. 起動時に `CLAUDE.md` が自動で読み込まれ、アプリの構成や実装上の注意点(全体再描画、NFKC 正規化による検索、IME 対応など)が Claude に共有されます。
+3. 「検索にタグ絞り込みを追加して」のように、日本語で依頼できます。
+
+開発時のポイント:
+
+- ビルドやテストはありません。変更後は `index.html` をブラウザで開き直して動作を確認します。
+- 挙動を変えたときは、この README の「機能」も更新してください。
+- `CLAUDE.md` の内容が実装とずれたら、Claude に更新を依頼するか、`/init` で見直せます。
+- 個人用の設定は `.claude/settings.local.json` に書くと、共有設定の `.claude/settings.json` と分けて管理できます。
 
 ## 注意
 
