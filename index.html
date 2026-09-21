@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TODO 検索アプリ</title>
+<style>
+  :root {
+    --bg: #f5f6fa; --card: #fff; --text: #222; --muted: #888;
+    --border: #dde1ea; --accent: #4361ee; --danger: #e5484d; --mark: #ffe58a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161c; --card: #1e2129; --text: #e8eaf0; --muted: #8b90a0;
+      --border: #333846; --accent: #6c85ff; --danger: #ff6b70; --mark: #6b5b00;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
+    font-family: system-ui, "Hiragino Sans", "Yu Gothic UI", Meiryo, sans-serif;
+  }
+  main { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px; margin-bottom: 12px;
+  }
+  .row { display: flex; gap: 8px; }
+  input[type="text"], input[type="search"] {
+    flex: 1; min-width: 0; padding: 10px 12px; font: inherit; color: inherit;
+    background: transparent; border: 1px solid var(--border); border-radius: 8px;
+  }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button {
+    font: inherit; cursor: pointer; border: 0; border-radius: 8px;
+    padding: 10px 16px; background: var(--accent); color: #fff;
+  }
+  button.ghost { background: transparent; color: var(--muted); padding: 6px 10px; }
+  button.ghost:hover { color: var(--danger); }
+  button.ghost.edit:hover { color: var(--accent); }
+  li input[type="text"] { padding: 6px 10px; }
+  .status { font-size: .85rem; color: var(--muted); margin: 0 4px 8px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 4px; border-bottom: 1px solid var(--border);
+  }
+  li:last-child { border-bottom: 0; }
+  li label { flex: 1; cursor: pointer; word-break: break-word; }
+  li.done label { text-decoration: line-through; color: var(--muted); }
+  mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1px; }
+  .empty { text-align: center; color: var(--muted); padding: 24px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>TODO</h1>
+
+  <form class="card row" id="add-form">
+    <input type="text" id="new-text" placeholder="新しいTODOを入力" aria-label="新しいTODO" autocomplete="off">
+    <button type="submit">追加</button>
+  </form>
+
+  <div class="card row">
+    <input type="search" id="search" placeholder="🔍 キーワードで検索(大文字小文字を区別しません)" aria-label="検索" autocomplete="off">
+  </div>
+
+  <p class="status" id="status" aria-live="polite"></p>
+
+  <div class="card">
+    <ul id="list"></ul>
+    <p class="empty" id="empty" hidden></p>
+  </div>
+</main>
+
+<script>
+(() => {
+  const STORAGE_KEY = "todo-app-items";
+  const $ = (id) => document.getElementById(id);
+  const listEl = $("list"), emptyEl = $("empty"), statusEl = $("status");
+  const searchEl = $("search"), newEl = $("new-text");
+
+  let todos = load();
+
+  function load() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+    catch { return []; }
+  }
+  function save() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(todos)); } catch {}
+  }
+
+  // 大文字小文字・全角半角(NFKC)を正規化して比較する
+  const norm = (s) => s.normalize("NFKC").toLowerCase();
+
+  // 元の文字列上での一致範囲を返す(NFKCで長さが変わる文字があるため1文字ずつ正規化して対応付け)
+  function findRanges(text, query) {
+    const q = norm(query);
+    if (!q) return [];
+    let normalized = "";
+    const map = []; // normalized の各位置 -> text 内の元インデックス
+    let i = 0;
+    for (const ch of text) {
+      const n = norm(ch);
+      for (let k = 0; k < n.length; k++) map.push(i);
+      normalized += n;
+      i += ch.length;
+    }
+    const ranges = [];
+    let pos = 0;
+    while ((pos = normalized.indexOf(q, pos)) !== -1) {
+      const start = map[pos];
+      const lastNorm = pos + q.length - 1;
+      const lastCh = map[lastNorm];
+      const end = lastCh + (String.fromCodePoint(text.codePointAt(lastCh)).length);
+      ranges.push([start, end]);
+      pos += q.length;
+    }
+    return ranges;
+  }
+
+  function appendHighlighted(parent, text, query) {
+    const ranges = findRanges(text, query);
+    let cursor = 0;
+    for (const [s, e] of ranges) {
+      if (s < cursor) continue;
+      if (s > cursor) parent.append(text.slice(cursor, s));
+      const m = document.createElement("mark");
+      m.textContent = text.slice(s, e);
+      parent.append(m);
+      cursor = e;
+    }
+    if (cursor < text.length) parent.append(text.slice(cursor));
+  }
+
+  let editingId = null;
+
+  function startEdit(id) { editingId = id; render(); }
+  function cancelEdit() { editingId = null; render(); }
+  function commitEdit(t, value) {
+    if (editingId !== t.id) return; // Enter後のblurによる二重確定を防ぐ
+    const text = value.trim();
+    if (text) { t.text = text; save(); } // 空にした場合は元の内容のまま
+    editingId = null;
+    render();
+  }
+
+  function render() {
+    let focusTarget = null;
+    const query = searchEl.value.trim();
+    const q = norm(query);
+    const visible = q ? todos.filter((t) => norm(t.text).includes(q)) : todos;
+
+    listEl.replaceChildren();
+    for (const t of visible) {
+      const li = document.createElement("li");
+      li.className = t.done ? "done" : "";
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = t.done;
+      cb.id = "cb-" + t.id;
+      cb.addEventListener("change", () => { t.done = cb.checked; save(); render(); });
+
+      if (t.id === editingId) {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.value = t.text;
+        input.setAttribute("aria-label", "TODOを編集");
+        input.addEventListener("keydown", (e) => {
+          if (e.isComposing) return; // IME確定のEnterは無視
+          if (e.key === "Enter") commitEdit(t, input.value);
+          else if (e.key === "Escape") cancelEdit();
+        });
+        input.addEventListener("blur", () => commitEdit(t, input.value));
+        li.append(cb, input);
+        listEl.append(li);
+        focusTarget = input;
+        continue;
+      }
+
+      const label = document.createElement("label");
+      label.htmlFor = cb.id;
+      appendHighlighted(label, t.text, query);
+      label.addEventListener("dblclick", (e) => { e.preventDefault(); startEdit(t.id); });
+
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "ghost edit";
+      edit.textContent = "編集";
+      edit.setAttribute("aria-label", `「${t.text}」を編集`);
+      edit.addEventListener("click", () => startEdit(t.id));
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "ghost";
+      del.textContent = "削除";
+      del.setAttribute("aria-label", `「${t.text}」を削除`);
+      del.addEventListener("click", () => {
+        todos = todos.filter((x) => x.id !== t.id);
+        save(); render();
+      });
+
+      li.append(cb, label, edit, del);
+      listEl.append(li);
+    }
+
+    if (focusTarget) { focusTarget.focus(); focusTarget.select(); }
+
+    const remaining = todos.filter((t) => !t.done).length;
+    statusEl.textContent = q
+      ? `${visible.length} 件ヒット(全 ${todos.length} 件)`
+      : `全 ${todos.length} 件(未完了 ${remaining} 件)`;
+
+    emptyEl.hidden = visible.length > 0;
+    emptyEl.textContent = q ? "該当するTODOはありません" : "TODOはまだありません";
+  }
+
+  $("add-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = newEl.value.trim();
+    if (!text) return;
+    todos.unshift({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text, done: false });
+    newEl.value = "";
+    save(); render();
+  });
+
+  // input イベントは日本語入力(IME)の変換中も発火するため、入力に合わせて即時に更新される
+  searchEl.addEventListener("input", render);
+
+  render();
+})();
+</script>
+</body>
+</html>
